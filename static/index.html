@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock Tracker</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1d2330; --muted:#6b7280; --line:#e5e7eb; --accent:#2563eb; --warn:#b45309; --warnbg:#fef3c7; --bad:#b91c1c; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:20px 24px; background:var(--card); border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:20px; }
+  main { max-width:1100px; margin:0 auto; padding:24px; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:20px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .stat b { display:block; font-size:24px; margin-top:4px; }
+  .stat span { color:var(--muted); font-size:13px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:20px; }
+  .toolbar, form.add { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+  input, select, button { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+  input[type=search] { flex:1; min-width:180px; }
+  button { background:var(--accent); color:#fff; border-color:var(--accent); cursor:pointer; }
+  button.ghost { background:#fff; color:var(--ink); border-color:var(--line); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; cursor:pointer; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .badge { background:var(--warnbg); color:var(--warn); padding:2px 8px; border-radius:999px; font-size:12px; }
+  .msg { min-height:20px; font-size:14px; color:var(--bad); }
+  .pager { display:flex; gap:8px; align-items:center; justify-content:flex-end; margin-top:12px; color:var(--muted); font-size:14px; }
+  @media (max-width:640px) { .hide-sm { display:none; } main { padding:12px; } }
+</style>
+</head>
+<body>
+<header><h1>Stock Tracker</h1></header>
+<main>
+  <section class="stats">
+    <div class="stat"><span>Items</span><b id="s-items">0</b></div>
+    <div class="stat"><span>Units in stock</span><b id="s-units">0</b></div>
+    <div class="stat"><span>Low stock</span><b id="s-low">0</b></div>
+  </section>
+
+  <section class="card">
+    <form class="add" id="add-form">
+      <input name="sku" placeholder="SKU" required>
+      <input name="name" placeholder="Item name" required>
+      <input name="category" placeholder="Category">
+      <input name="quantity" type="number" min="0" placeholder="Opening qty">
+      <input name="reorder_level" type="number" min="0" placeholder="Reorder level">
+      <button>Add item</button>
+    </form>
+    <div class="msg" id="msg"></div>
+  </section>
+
+  <section class="card">
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="Search by name or SKU">
+      <select id="category"><option value="">All categories</option></select>
+      <label><input type="checkbox" id="low"> Low stock only</label>
+    </div>
+    <table>
+      <thead><tr>
+        <th data-sort="sku">SKU</th><th data-sort="name">Name</th>
+        <th data-sort="category" class="hide-sm">Category</th><th data-sort="quantity">Qty</th>
+        <th class="hide-sm">Status</th><th>Adjust stock</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="pager">
+      <span id="page-info"></span>
+      <button class="ghost" id="prev">Prev</button><button class="ghost" id="next">Next</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const state = { page: 1, per_page: 10, sort: "name", order: "asc", total: 0 };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
+  if (res.status === 204) return null;
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error || "Request failed");
+  return body;
+}
+
+async function loadSummary() {
+  const s = await api("/api/summary");
+  $("s-items").textContent = s.items;
+  $("s-units").textContent = s.units;
+  $("s-low").textContent = s.low_stock;
+  const sel = $("category"), current = sel.value;
+  sel.innerHTML = '<option value="">All categories</option>' +
+    s.categories.map((c) => `<option>${esc(c)}</option>`).join("");
+  sel.value = current;
+}
+
+async function loadItems() {
+  const params = new URLSearchParams({
+    q: $("q").value, category: $("category").value, low_stock: $("low").checked,
+    sort: state.sort, order: state.order, page: state.page, per_page: state.per_page,
+  });
+  const data = await api(`/api/items?${params}`);
+  state.total = data.total;
+  $("rows").innerHTML = data.items.map((i) => `
+    <tr>
+      <td>${esc(i.sku)}</td><td>${esc(i.name)}</td>
+      <td class="hide-sm">${esc(i.category)}</td>
+      <td class="num">${i.quantity} ${esc(i.unit)}</td>
+      <td class="hide-sm">${i.low_stock ? '<span class="badge">Reorder</span>' : "OK"}</td>
+      <td>
+        <input type="number" min="1" value="1" style="width:70px" id="qty-${i.id}">
+        <button class="ghost" onclick="move(${i.id}, 'in')">+ In</button>
+        <button class="ghost" onclick="move(${i.id}, 'out')">- Out</button>
+      </td>
+    </tr>`).join("") || '<tr><td colspan="6">No items found.</td></tr>';
+  const pages = Math.max(1, Math.ceil(state.total / state.per_page));
+  $("page-info").textContent = `Page ${state.page} of ${pages} (${state.total} items)`;
+  $("prev").disabled = state.page <= 1;
+  $("next").disabled = state.page >= pages;
+}
+
+async function refresh() {
+  $("msg").textContent = "";
+  try { await Promise.all([loadSummary(), loadItems()]); }
+  catch (e) { $("msg").textContent = e.message; }
+}
+
+async function move(id, kind) {
+  try {
+    await api(`/api/items/${id}/movements`, {
+      method: "POST", body: JSON.stringify({ kind, quantity: $(`qty-${id}`).value }),
+    });
+    refresh();
+  } catch (e) { $("msg").textContent = e.message; }
+}
+
+$("add-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target));
+  for (const k of ["quantity", "reorder_level"]) if (data[k] === "") delete data[k];
+  try {
+    await api("/api/items", { method: "POST", body: JSON.stringify(data) });
+    e.target.reset();
+    refresh();
+  } catch (err) { $("msg").textContent = err.message; }
+});
+
+let timer;
+$("q").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => { state.page = 1; loadItems(); }, 250); });
+$("category").addEventListener("change", () => { state.page = 1; loadItems(); });
+$("low").addEventListener("change", () => { state.page = 1; loadItems(); });
+$("prev").onclick = () => { state.page--; loadItems(); };
+$("next").onclick = () => { state.page++; loadItems(); };
+document.querySelectorAll("th[data-sort]").forEach((th) => th.addEventListener("click", () => {
+  state.order = state.sort === th.dataset.sort && state.order === "asc" ? "desc" : "asc";
+  state.sort = th.dataset.sort;
+  loadItems();
+}));
+
+refresh();
+</script>
+</body>
+</html>
